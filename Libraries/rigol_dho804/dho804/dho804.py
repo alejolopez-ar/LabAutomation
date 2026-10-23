@@ -1,6 +1,7 @@
 import subprocess
 import time
 from datetime import datetime
+import numpy as np
 import pyvisa
 
 class AdbBridge:
@@ -34,8 +35,13 @@ class AdbBridge:
         subprocess.run(["adb", "disconnect", self.ip_puerto], capture_output=True, text=True)
 
 class DHO804:
-    def __init__(self,ip,adbport):
+    def __init__(self,ip,adbport,scpi_port=None):
         self.ip = ip
+        # scpi_port (p. ej. 5555): SCPI por socket TCP en vez de VXI-11. Sirve cuando
+        # el servicio VXI-11 del osciloscopio queda colgado (no responde ni *IDN?)
+        # tras cortar una transferencia a mitad de camino; el socket sigue andando.
+        self.resource = (f'TCPIP::{ip}::{scpi_port}::SOCKET' if scpi_port
+                         else f'TCPIP::{ip}::INSTR')
         self.adb_bridge = AdbBridge(ip + ':' + adbport)
         self.rm = pyvisa.ResourceManager()    
 
@@ -51,7 +57,7 @@ class DHO804:
         for attempt in range(4):
             try:
                 self.scpi_bridge = self.rm.open_resource(
-                    f'TCPIP::{self.ip}::INSTR', open_timeout=8000)
+                    self.resource, open_timeout=8000)
                 self.scpi_bridge.write_termination = '\n'
                 self.scpi_bridge.read_termination = '\n'
                 self.scpi_bridge.timeout = 8000
@@ -152,6 +158,89 @@ class DHO804:
             self.scpi_bridge.write(f':TRIGger:EDGE:SOURce CHANnel{source}')
             self.scpi_bridge.write(f':TRIGger:EDGE:SLOPe {slope}')
             self.scpi_bridge.write(f':TRIGger:EDGE:LEVel {level}')
+
+    def set_memory_depth(self, mdepth: str):
+        """Profundidad de memoria: AUTO, 1k, 10k, 100k, 1M, 5M o 10M (con 2 canales, hasta 5M)."""
+        self.scpi_bridge.write(f':ACQuire:MDEPth {mdepth}')
+
+    def run(self):
+        self.scpi_bridge.write(':RUN')
+
+    def single(self, timeout: float = 30.0, force_after: float = None):
+        """Dispara una adquisición única y espera a que termine (estado STOP).
+
+        Primero espera a que el estado SALGA de STOP: justo después de :SINGle el
+        osciloscopio todavía puede contestar el STOP de la adquisición anterior, y
+        leer en ese momento devuelve la memoria vieja (o vacía). Con force_after (s),
+        si el disparo no engancha en ese tiempo, lo fuerza con :TFORce.
+        """
+        b = self.scpi_bridge
+        b.write(':SINGle')
+        t0 = time.time()
+        while b.query(':TRIGger:STATus?').strip() == 'STOP':
+            if time.time() - t0 > 2.0:
+                break                      # ya terminó (adquisición muy rápida)
+            time.sleep(0.02)
+        forced = False
+        while b.query(':TRIGger:STATus?').strip() != 'STOP':
+            elapsed = time.time() - t0
+            if force_after is not None and not forced and elapsed > force_after:
+                b.write(':TFORce')
+                forced = True
+            if elapsed > timeout:
+                raise TimeoutError('El osciloscopio no completó la adquisición única')
+            time.sleep(0.05)
+
+    def read_waveform(self, ch: int, chunk: int = 100_000):
+        """Lee la memoria interna del canal (modo RAW, formato WORD) en tensión.
+
+        El osciloscopio tiene que estar en STOP (ver single()). Devuelve (v, dt):
+        array de tensiones en V y el intervalo de muestreo en s. Se lee por
+        bloques porque la memoria puede tener millones de puntos.
+        Tensión = (dato - YORigin - YREFerence) * YINCrement (guía de programación,
+        sección 3.28). La guía no dice el orden de bytes del WORD: se asume
+        little-endian; thd.py lo verifica contra :MEASure:VPP?.
+        """
+        if not self._validate_channel(ch):
+            raise ValueError(f'Canal inválido: {ch}')
+        b = self.scpi_bridge
+        b.write(f':WAVeform:SOURce CHANnel{ch}')
+        b.write(':WAVeform:MODE RAW')
+        b.write(':WAVeform:FORMat WORD')
+        # Esperar a que aplique modo y formato, y leer la escala de una sola vez con
+        # PREamble: consultando YINC/YOR/YREF por separado justo después de cambiar
+        # de modo, el DHO804 a veces devuelve valores viejos (amplitud mal escalada).
+        # La cantidad de puntos sale de la memoria: el campo "points" del PREamble es
+        # el tamaño de la ventana STARt-STOP que quedó de la lectura anterior.
+        npts = int(float(b.query(':ACQuire:MDEPth?')))
+        b.write(':WAVeform:STARt 1')
+        b.write(f':WAVeform:STOP {min(chunk, npts)}')
+        b.query('*OPC?')
+        pre = b.query(':WAVeform:PREamble?').split(',')
+        # format, type, points, count, xinc, xorigin, xref, yinc, yorigin, yref
+        dt = float(pre[4])
+        yinc, yor, yref = float(pre[7]), float(pre[8]), float(pre[9])
+        old_timeout = b.timeout
+        b.timeout = 30000
+        try:
+            data = []
+            for start in range(1, npts + 1, chunk):
+                stop = min(start + chunk - 1, npts)
+                b.write(f':WAVeform:STARt {start}')
+                b.write(f':WAVeform:STOP {stop}')
+                block = b.query_binary_values(
+                    ':WAVeform:DATA?', datatype='H', is_big_endian=False,
+                    container=np.array)
+                # Con memoria menor que el bloque, el DHO804 no siempre respeta STOP
+                # y devuelve el bloque entero: los puntos de más son basura.
+                n_req = stop - start + 1
+                if len(block) < n_req:
+                    raise IOError(f'Bloque incompleto: {len(block)} de {n_req} puntos')
+                data.append(block[:n_req])
+        finally:
+            b.timeout = old_timeout
+        raw = np.concatenate(data).astype(np.float64)
+        return (raw - yor - yref) * yinc, dt
 
     def _validate_channel(self,ch:int):
         return (ch > 0 and ch <=5)
