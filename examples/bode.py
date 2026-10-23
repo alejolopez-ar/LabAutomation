@@ -128,6 +128,7 @@ def main():
     p.add_argument("--probe-out", type=float, default=10, help="Relación de sonda del canal de salida (def. 10X)")
     p.add_argument("--scope-ip", default="192.168.68.68", help="IP del osciloscopio")
     p.add_argument("--scope-adb-port", default="55555", help="Puerto ADB del osciloscopio")
+    p.add_argument("--scope-port", type=int, default=None, help="SCPI por socket TCP en este puerto (p. ej. 5555) en vez de VXI-11; usar si VXI-11 queda colgado")
     p.add_argument("--gen-host", default=None, help="Host del puente TCP del generador")
     p.add_argument("--gen-port", default=None, help="Puerto del puente TCP del generador")
     p.add_argument("--gen-local", action="store_true", help="Generador por USB directo (pyvisa/USBTMC), sin Pi. Ignora --gen-host/--gen-port")
@@ -152,7 +153,7 @@ def main():
         gen = Utg962Local()
     else:
         gen = Utg962(host=args.gen_host, port=args.gen_port)
-    scope = DHO804(args.scope_ip, args.scope_adb_port)
+    scope = DHO804(args.scope_ip, args.scope_adb_port, args.scope_port)
     scope.connect()
 
     results = []

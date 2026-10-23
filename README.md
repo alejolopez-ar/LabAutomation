@@ -19,7 +19,7 @@ Algunos submódulos incluyen sus propios archivos `requirements.txt` para depend
 
 ```
 Libraries/
-├── rigol_dho804/dho804/        # osciloscopio Rigol DHO804 (SCPI por TCPIP + ADB)
+├── rigol_dho804/dho804/        # osciloscopio Rigol DHO804 (SCPI por VXI-11 o socket + ADB)
 ├── unit_ut61eplus/ut61eplus/   # multímetro UNI-T UT61E+ (USB HID, chip CP2110)
 └── unit_utg932e/               # generador UNI-T UTG932E/UTG962E (PyVISA USB)
 examples/                        # scripts de medición que usan los wrappers
@@ -43,6 +43,16 @@ from rigol_dho804.dho804 import DHO804
 from unit_ut61eplus.ut61eplus import UT61EPLUS
 from unit_utg932e.utg962 import Utg962
 ```
+
+## Ejemplos de medición
+
+| Script | Qué mide | Documentación |
+|---|---|---|
+| `examples/bode.py` | Respuesta en frecuencia (magnitud y fase) | `examples/bode.md` |
+| `examples/thd.py` | THD, THD+N, residuo, THD vs potencia y Pmax al X % de THD con límite de excursión | `examples/thd.md` |
+
+Los dos aceptan `--gen-local` (UTG por USB directo) y `--scope-port 5555` (DHO804 por socket
+TCP, más robusto que VXI-11).
 
 ## Requisitos de hardware
 

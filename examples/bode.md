@@ -72,6 +72,7 @@ sature cerca del pico.
 |---|---|---|
 | `--scope-ip` | 192.168.68.68 | IP del osciloscopio |
 | `--scope-adb-port` | 55555 | puerto ADB del osc. (capturas / autoset) |
+| `--scope-port` | — | SCPI por socket TCP en ese puerto (`5555`) en vez de VXI-11. Usarlo si VXI-11 queda colgado (no responde ni `*IDN?` aunque la web del osciloscopio ande) |
 | `--gen-host` | env `LAB_HOST` o 192.168.68.108 | host del puente TCP del generador (la Pi) |
 | `--gen-port` | 5555 | puerto del puente TCP |
 
@@ -119,6 +120,13 @@ venv/bin/python examples/bode.py --fstart 0.5 --fstop 10e3 --points 50 --vpp 0.5
   mejor layout, tierra de punta corta, o medición diferencial.
 - **Saturación del DUT**: si la salida supera las rieles, recorta y la magnitud sale
   comprimida (o `nan` si sobre-rangea la auto-escala). Bajá `--vpp`.
+- **Debajo de ~35 Hz las mediciones no son confiables** (TP04, 2026-10-22): con bases de
+  tiempo lentas `:MEASure:VPP?` y el autorango del DHO804 fallan (Vin leída de 0,04–0,12 Vpp
+  con 0,2 Vpp aplicados, lecturas `nan`), y el promediado sin disparo firme cancela la señal.
+  Lo que funcionó: disparo con la salida SYNC del UTG en CH4 (DC, nivel 1 V, **noise reject
+  del disparo apagado**), escalas verticales fijas, `single()` + `read_waveform()` y ajuste
+  de senoidal a cada canal (`sine_fit` de `thd.py`). Empalmó con `bode.py` a 40 Hz dentro de
+  0,4 dB.
 - **Baja frecuencia es lenta**: a 0.5 Hz un período son 2 s y se necesitan varios → varios
   segundos por punto. Es física, no overhead.
 
